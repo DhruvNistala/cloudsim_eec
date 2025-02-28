@@ -1,3 +1,4 @@
+# Dhruv Nistala, Matthew Little
 # Covers load spikes, system constraints, and heterogeneous machines
 # Tests intense spikes (Task 5), moderate spikes (Tasks 6, 7, 9, 10), sparse loads (Tasks 8, 11), and baseline (Tasks 1-4) across 8 diverse machine classes with GPU/no-GPU options
 
