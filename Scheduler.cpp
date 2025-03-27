@@ -21,6 +21,7 @@ void Scheduler::Init() {
     // 
     SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
     SimOutput("Scheduler::Init(): Initializing scheduler", 1);
+    active_machines = Machine_GetTotal()
     for(unsigned i = 0; i < active_machines; i++)
         vms.push_back(VM_Create(LINUX, X86));
     for(unsigned i = 0; i < active_machines; i++) {
