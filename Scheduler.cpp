@@ -6,341 +6,553 @@
 //
 
 #include "Scheduler.hpp"
-#include <algorithm>
-#include <map>
 
-static bool migrating = false;
-
+/**
+ * Initialize the E-eco scheduler
+ * 
+ * This method implements the initialization phase of the E-eco algorithm:
+ * 1. Discovers all available machines in the cluster
+ * 2. Groups machines by CPU type for compatibility matching
+ * 3. Divides machines into three tiers (Running, Intermediate, Switched Off)
+ * 4. Creates VMs for machines in the Running tier
+ * 5. Sets appropriate power states for machines in each tier
+ */
 void Scheduler::Init() {
     // Find the parameters of the clusters
-    // Get the total number of machines
-    // For each machine:
-    //      Get the type of the machine
-    //      Get the memory of the machine
-    //      Get the number of CPUs
-    //      Get if there is a GPU or not
-    // 
     SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
-    SimOutput("Scheduler::Init(): Initializing scheduler", 1);
+    SimOutput("Scheduler::Init(): Initializing E-eco scheduler", 1);
     
-    initialized = false;
+    unsigned totalMachines = Machine_GetTotal();
+    unsigned runningMachines = max(totalMachines / 3, (unsigned)4); // Start with 1/3 of machines in running tier
+    unsigned intermediateMachines = max(totalMachines / 6, (unsigned)2); // Start with 1/6 in intermediate tier
     
-    unsigned total_machines = Machine_GetTotal();
-    for(unsigned i = 0; i < total_machines; i++) {
+    for (unsigned i = 0; i < totalMachines; i++) {
         MachineInfo_t info = Machine_GetInfo(MachineId_t(i));
-        if(info.s_state != S5) { // Only consider machines that are not powered off
-            machines.push_back(MachineId_t(i));
-            vms.push_back(VM_Create(LINUX, info.cpu));
-            machineUtilization[MachineId_t(i)] = 0; // Initialize utilization to 0
+        cpuTypeMachines[info.cpu].push_back(MachineId_t(i));
+    }
+    
+    unsigned machineCount = 0;
+    
+    for (auto& cpuGroup : cpuTypeMachines) {
+        for (auto& machineId : cpuGroup.second) {
+            if (machineCount < runningMachines) {
+                machines.push_back(machineId);
+                MachineInfo_t info = Machine_GetInfo(machineId);
+                vms.push_back(VM_Create(LINUX, info.cpu)); // Create VMs with matching CPU type
+                machineTiers[machineId] = RUNNING;
+                machineLoads[machineId] = 0;
+                machineCount++;
+            } else if (machineCount < runningMachines + intermediateMachines) {
+                machineTiers[machineId] = INTERMEDIATE;
+                Machine_SetState(machineId, S3); // Put in standby mode
+                machineLoads[machineId] = 0;
+                machineCount++;
+            } else {
+                machineTiers[machineId] = SWITCHED_OFF;
+                Machine_SetState(machineId, S5); // Power off
+                machineLoads[machineId] = 0;
+            }
         }
     }
     
-    for(unsigned i = 0; i < machines.size(); i++) {
+    for (unsigned i = 0; i < machines.size(); i++) {
         VM_Attach(vms[i], machines[i]);
     }
     
-    BuildEnergySortedMachineList();
-    
-    SimOutput("Scheduler::Init(): Successfully initialized the pmapper scheduler", 3);
+    SimOutput("Scheduler::Init(): Successfully initialized the E-eco scheduler with " + 
+              to_string(runningMachines) + " running machines and " + 
+              to_string(intermediateMachines) + " intermediate machines", 3);
 }
 
+/**
+ * Handle VM migration completion
+ * 
+ * Updates tracking data structures after a VM has been migrated.
+ * E-eco minimizes migrations, but this handles any necessary migrations.
+ * 
+ * @param time Current simulation time
+ * @param vm_id ID of the VM that completed migration
+ */
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
-    // Update your data structure. The VM now can receive new tasks
-    SimOutput("Scheduler::MigrationComplete(): VM " + to_string(vm_id) + " migration completed at " + to_string(time), 3);
-    migrating = false;
+    SimOutput("Scheduler::MigrationComplete(): VM " + to_string(vm_id) + " migration complete", 3);
 }
 
+/**
+ * Handle new task arrival
+ * 
+ * Implements the task allocation strategy of E-eco:
+ * 1. Try to allocate the task to a machine in the Running tier with compatible CPU
+ * 2. If no suitable machine is found, activate a machine from the Intermediate tier
+ * 3. Report SLA violation if no suitable machine is found
+ * 4. Adjust tiers based on system load after allocation
+ * 
+ * @param now Current simulation time
+ * @param task_id ID of the newly arrived task
+ */
 void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
-    SimOutput("Scheduler::NewTask(): Processing new task " + to_string(task_id), 1);
+    SimOutput("Scheduler::NewTask(): Processing task " + to_string(task_id), 3);
     
-    if (!initialized) {
-        BuildEnergySortedMachineList();
-    }
-    
-    Priority_t priority = (task_id == 0 || task_id == 64) ? HIGH_PRIORITY : MID_PRIORITY;
     unsigned taskMemory = GetTaskMemory(task_id);
     CPUType_t requiredCPU = RequiredCPUType(task_id);
-    VMType_t requiredVM = RequiredVMType(task_id);
-    
-    SimOutput("Scheduler::NewTask(): Task " + to_string(task_id) + 
-              " requires CPU type " + to_string(requiredCPU) + 
-              " and VM type " + to_string(requiredVM), 1);
+    Priority_t priority = (task_id == 0 || task_id == 64) ? HIGH_PRIORITY : MID_PRIORITY;
     
     bool allocated = false;
-    
-    for (auto& machine_pair : energySortedMachines) {
-        MachineId_t machineId = machine_pair.first;
-        MachineInfo_t info = Machine_GetInfo(machineId);
-        
-        if (info.s_state == S5) {
-            continue;
-        }
-        
-        if (info.cpu != requiredCPU) {
-            SimOutput("Scheduler::NewTask(): Machine " + to_string(machineId) + 
-                      " has incompatible CPU type " + to_string(info.cpu) + 
-                      " for task " + to_string(task_id), 1);
-            continue;
-        }
-        
-        VMId_t vmId = FindVMForMachine(machineId, requiredVM);
-        
-        if (info.memory_used + taskMemory <= info.memory_size) {
+    for (auto& machineId : machines) {
+        if (machineTiers[machineId] == RUNNING && IsMachineSuitable(machineId, task_id)) {
+            VMId_t vmId = vms[find(machines.begin(), machines.end(), machineId) - machines.begin()];
+            
             try {
                 VM_AddTask(vmId, task_id, priority);
-                machineUtilization[machineId]++; // Increment utilization count
+                machineLoads[machineId] += taskMemory;
                 allocated = true;
-                
                 SimOutput("Scheduler::NewTask(): Allocated task " + to_string(task_id) + 
-                          " to machine " + to_string(machineId), 0);
+                         " to machine " + to_string(machineId), 3);
                 break;
             } catch (const exception& e) {
-                SimOutput("Scheduler::NewTask(): Exception when adding task: " + string(e.what()), 0);
-                continue; // Try next machine
+                SimOutput("Scheduler::NewTask(): Error allocating task: " + string(e.what()), 1);
+                continue;
             }
         }
     }
     
     if (!allocated) {
-        SimOutput("Scheduler::NewTask(): Could not allocate task " + to_string(task_id) + 
-                  " - SLA violation", 1);
+        MachineId_t machineId = FindCompatibleMachine(requiredCPU, true);
+        if (machineId != (MachineId_t)-1) {
+            ActivateMachine(machineId, now);
+            
+            VMId_t vmId = VM_Create(LINUX, requiredCPU);
+            vms.push_back(vmId);
+            machines.push_back(machineId);
+            VM_Attach(vmId, machineId);
+            
+            try {
+                VM_AddTask(vmId, task_id, priority);
+                machineLoads[machineId] += taskMemory;
+                allocated = true;
+                SimOutput("Scheduler::NewTask(): Activated machine " + to_string(machineId) + 
+                         " for task " + to_string(task_id), 1);
+            } catch (const exception& e) {
+                SimOutput("Scheduler::NewTask(): Error allocating task: " + string(e.what()), 1);
+            }
+        }
     }
     
-    CheckAndTurnOffUnusedMachines();
+    if (!allocated) {
+        SimOutput("Scheduler::NewTask(): SLA violation - Could not allocate task " + 
+                 to_string(task_id), 1);
+    }
+    
+    if (allocated) {
+        AdjustTiers(now);
+    }
 }
 
+/**
+ * Perform periodic maintenance
+ * 
+ * Adjusts tier sizes based on current system load and
+ * activates/deactivates machines as needed.
+ * 
+ * @param now Current simulation time
+ */
 void Scheduler::PeriodicCheck(Time_t now) {
-    SimOutput("Scheduler::PeriodicCheck(): Running periodic check at time " + to_string(now), 1);
+    AdjustTiers(now);
     
-    static int check_count = 0;
-    if (check_count++ % 10 == 0) {
-        BuildEnergySortedMachineList();
+    if (now % 1000000 == 0) { // Reduced frequency to improve performance
+        unsigned running = 0, intermediate = 0, off = 0;
+        for (auto& pair : machineTiers) {
+            if (pair.second == RUNNING) running++;
+            else if (pair.second == INTERMEDIATE) intermediate++;
+            else off++;
+        }
+        
+        SimOutput("Scheduler::PeriodicCheck(): System load: " + to_string(GetSystemLoad()) + 
+                 ", Running: " + to_string(running) + 
+                 ", Intermediate: " + to_string(intermediate) + 
+                 ", Off: " + to_string(off), 3);
     }
-    
-    SimOutput("Scheduler::PeriodicCheck(): Total machines: " + to_string(machines.size()), 1);
-    SimOutput("Scheduler::PeriodicCheck(): Total energy: " + to_string(Machine_GetClusterEnergy()), 1);
-    
-    CheckAndTurnOffUnusedMachines();
 }
 
-void Scheduler::Shutdown(Time_t time) {
-    // Do your final reporting and bookkeeping here.
-    // Report about the total energy consumed
-    // Report about the SLA compliance
-    // Shutdown everything to be tidy :-)
-    for(auto & vm: vms) {
+/**
+ * Perform final cleanup and reporting
+ * 
+ * Shuts down all VMs and reports final statistics.
+ * 
+ * @param now Final simulation time
+ */
+void Scheduler::Shutdown(Time_t now) {
+    for (auto& vm : vms) {
         VM_Shutdown(vm);
     }
-    SimOutput("SimulationComplete(): Finished!", 4);
-    SimOutput("SimulationComplete(): Time is " + to_string(time), 4);
-    SimOutput("SimulationComplete(): Total energy consumed: " + to_string(Machine_GetClusterEnergy()) + " KW-Hour", 4);
+    
+    SimOutput("Scheduler::Shutdown(): E-eco scheduler shutdown complete", 3);
 }
 
+/**
+ * Handle task completion
+ * 
+ * Updates machine loads and adjusts tiers based on
+ * the new system state after task completion.
+ * 
+ * @param now Current simulation time
+ * @param task_id ID of the completed task
+ */
 void Scheduler::TaskComplete(Time_t now, TaskId_t task_id) {
-    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " is complete at " + to_string(now), 0);
+    SimOutput("Scheduler::TaskComplete(): Task " + to_string(task_id) + " completed", 3);
     
-    MachineId_t taskMachine = FindMachineForTask(task_id);
+    for (unsigned i = 0; i < machines.size(); i++) {
+        VMInfo_t vmInfo = VM_GetInfo(vms[i]);
+        auto taskIter = find(vmInfo.active_tasks.begin(), vmInfo.active_tasks.end(), task_id);
+        
+        if (taskIter != vmInfo.active_tasks.end()) {
+            MachineId_t machineId = machines[i];
+            machineLoads[machineId] -= GetTaskMemory(task_id);
+            
+            AdjustTiers(now);
+            break;
+        }
+    }
+}
+
+/**
+ * Calculate running and intermediate tier sizes based on current workload
+ * 
+ * Implements the tier sizing formulas from the E-eco algorithm.
+ * 
+ * @param totalMachines Total number of machines in the cluster
+ * @param activeWorkload Number of active tasks in the system
+ * @param runningSize Output parameter for calculated running tier size
+ * @param intermediateSize Output parameter for calculated intermediate tier size
+ */
+void Scheduler::CalculateTierSizes(unsigned totalMachines, unsigned activeWorkload, 
+                                  unsigned& runningSize, unsigned& intermediateSize) {
+    double systemLoad = GetSystemLoad();
     
-    if (taskMachine != (MachineId_t)-1) {
-        machineUtilization[taskMachine]--;
+    if (systemLoad > HIGH_LOAD_THRESHOLD) {
+        runningSize = max((unsigned)(totalMachines * 0.6), (unsigned)4);
+        intermediateSize = max((unsigned)(totalMachines * 0.2), (unsigned)2);
+    } else if (systemLoad < LOW_LOAD_THRESHOLD) {
+        runningSize = max((unsigned)(totalMachines * 0.3), (unsigned)2);
+        intermediateSize = max((unsigned)(totalMachines * 0.2), (unsigned)2);
+    } else {
+        runningSize = max((unsigned)(totalMachines * 0.4), (unsigned)3);
+        intermediateSize = max((unsigned)(totalMachines * 0.2), (unsigned)2);
+    }
+    
+    unsigned minimumRunning = max(activeWorkload / 4, (unsigned)2); // Assuming 4 tasks per machine at max
+    runningSize = max(runningSize, minimumRunning);
+    
+    if (runningSize + intermediateSize > totalMachines) {
+        intermediateSize = totalMachines - runningSize;
+    }
+}
+
+/**
+ * Adjust machine tiers based on current system load
+ * 
+ * Core function of the E-eco algorithm that moves machines between tiers
+ * based on workload intensity and calculated tier sizes.
+ * 
+ * @param now Current simulation time
+ */
+void Scheduler::AdjustTiers(Time_t now) {
+    unsigned totalMachines = Machine_GetTotal();
+    unsigned activeWorkload = 0;
+    
+    for (unsigned i = 0; i < GetNumTasks(); i++) {
+        if (!IsTaskCompleted(TaskId_t(i))) {
+            activeWorkload++;
+        }
+    }
+    
+    unsigned desiredRunning, desiredIntermediate;
+    CalculateTierSizes(totalMachines, activeWorkload, desiredRunning, desiredIntermediate);
+    
+    unsigned currentRunning = 0, currentIntermediate = 0;
+    for (auto& pair : machineTiers) {
+        if (pair.second == RUNNING) currentRunning++;
+        else if (pair.second == INTERMEDIATE) currentIntermediate++;
+    }
+    
+    if (currentRunning < desiredRunning) {
+        unsigned toActivate = desiredRunning - currentRunning;
+        for (auto& pair : machineTiers) {
+            if (pair.second == INTERMEDIATE && toActivate > 0) {
+                ActivateMachine(pair.first, now);
+                toActivate--;
+            }
+        }
+    } else if (currentRunning > desiredRunning) {
+        vector<pair<MachineId_t, unsigned>> loadPairs;
         
-        vector<pair<MachineId_t, unsigned>> sortedByUtilization;
-        
-        for (auto& pair : machineUtilization) {
-            if (Machine_GetInfo(pair.first).s_state != S5) { // Only consider powered-on machines
-                sortedByUtilization.push_back(pair);
+        for (auto& machineId : machines) {
+            if (machineLoads[machineId] == 0) {
+                loadPairs.push_back({machineId, 0});
             }
         }
         
-        sort(sortedByUtilization.begin(), sortedByUtilization.end(),
+        sort(loadPairs.begin(), loadPairs.end(), 
              [](const pair<MachineId_t, unsigned>& a, const pair<MachineId_t, unsigned>& b) {
                  return a.second < b.second;
              });
         
-        if (sortedByUtilization.size() >= 2) {
-            size_t midPoint = sortedByUtilization.size() / 2;
-            
-            MachineId_t leastUtilizedMachine = sortedByUtilization[0].first;
-            TaskId_t smallestTask = FindSmallestTaskOnMachine(leastUtilizedMachine);
-            
-            if (smallestTask != (TaskId_t)-1) {
-                CPUType_t requiredCPU = RequiredCPUType(smallestTask);
-                
-                MachineId_t highlyUtilizedMachine = (MachineId_t)-1;
-                
-                for (size_t i = midPoint; i < sortedByUtilization.size(); i++) {
-                    MachineId_t candidateMachine = sortedByUtilization[i].first;
-                    MachineInfo_t info = Machine_GetInfo(candidateMachine);
-                    
-                    if (info.cpu == requiredCPU) {
-                        highlyUtilizedMachine = candidateMachine;
-                        break;
-                    }
-                }
-                
-                if (highlyUtilizedMachine != (MachineId_t)-1) {
-                    VMId_t sourceVM = FindVMForMachine(leastUtilizedMachine);
-                    VMId_t destVM = FindVMForMachine(highlyUtilizedMachine);
-                    
-                    VM_RemoveTask(sourceVM, smallestTask);
-                    
-                    Priority_t priority = (smallestTask == 0 || smallestTask == 64) ? HIGH_PRIORITY : MID_PRIORITY;
-                    VM_AddTask(destVM, smallestTask, priority);
-                    
-                    machineUtilization[leastUtilizedMachine]--;
-                    machineUtilization[highlyUtilizedMachine]++;
-                    
-                    SimOutput("Scheduler::TaskComplete(): Migrated task " + to_string(smallestTask) + 
-                              " from machine " + to_string(leastUtilizedMachine) + 
-                              " to machine " + to_string(highlyUtilizedMachine), 3);
-                } else {
-                    SimOutput("Scheduler::TaskComplete(): Could not find compatible machine for task " + 
-                              to_string(smallestTask) + " with CPU type " + to_string(requiredCPU), 3);
-                }
+        unsigned toDeactivate = currentRunning - desiredRunning;
+        for (auto& pair : loadPairs) {
+            if (toDeactivate > 0 && pair.second == 0) {
+                DeactivateMachine(pair.first, now);
+                toDeactivate--;
             }
         }
-        
-        CheckAndTurnOffUnusedMachines();
-    }
-}
-
-
-void Scheduler::BuildEnergySortedMachineList() {
-    static int rebuild_count = 0;
-    if (!energySortedMachines.empty() && rebuild_count++ % 5 != 0) {
-        return;
     }
     
-    SimOutput("Scheduler::BuildEnergySortedMachineList(): Rebuilding energy sorted machine list", 0);
+    unsigned currentTotal = currentRunning + currentIntermediate;
+    unsigned desiredTotal = desiredRunning + desiredIntermediate;
     
-    energySortedMachines.clear();
-    
-    for(unsigned i = 0; i < machines.size(); i++) {
-        uint64_t energy = Machine_GetEnergy(machines[i]);
-        energySortedMachines.push_back(make_pair(machines[i], energy));
-    }
-    
-    sort(energySortedMachines.begin(), energySortedMachines.end(), 
-         [](const pair<MachineId_t, uint64_t>& a, const pair<MachineId_t, uint64_t>& b) {
-             return a.second < b.second;
-         });
-    
-    initialized = true;
-}
-
-VMId_t Scheduler::FindVMForMachine(MachineId_t machineId, VMType_t vmType) {
-    for (unsigned i = 0; i < machines.size(); i++) {
-        if (machines[i] == machineId) {
-            return vms[i];
+    if (currentTotal < desiredTotal) {
+        unsigned toWake = desiredTotal - currentTotal;
+        for (auto& pair : machineTiers) {
+            if (pair.second == SWITCHED_OFF && toWake > 0) {
+                Machine_SetState(pair.first, S3);
+                machineTiers[pair.first] = INTERMEDIATE;
+                machineLoads[pair.first] = 0;
+                toWake--;
+                
+                SimOutput("Scheduler::AdjustTiers(): Moving machine " + to_string(pair.first) + 
+                         " from OFF to INTERMEDIATE", 3);
+            }
+        }
+    } else if (currentIntermediate > desiredIntermediate) {
+        unsigned toPowerOff = currentIntermediate - desiredIntermediate;
+        for (auto& pair : machineTiers) {
+            if (pair.second == INTERMEDIATE && toPowerOff > 0) {
+                Machine_SetState(pair.first, S5);
+                machineTiers[pair.first] = SWITCHED_OFF;
+                machineLoads[pair.first] = 0;
+                toPowerOff--;
+                
+                SimOutput("Scheduler::AdjustTiers(): Moving machine " + to_string(pair.first) + 
+                         " from INTERMEDIATE to OFF", 3);
+            }
         }
     }
-    
-    MachineInfo_t info = Machine_GetInfo(machineId);
-    SimOutput("Scheduler::FindVMForMachine(): Creating new VM with CPU type " + to_string(info.cpu) + 
-              " and VM type " + to_string(vmType) + " for machine " + to_string(machineId), 0);
-    
-    VMId_t newVM = VM_Create(vmType, info.cpu);
-    VM_Attach(newVM, machineId);
-    return newVM;
 }
 
-void Scheduler::CheckAndTurnOffUnusedMachines() {
-    for (auto& machine_pair : energySortedMachines) {
-        MachineId_t machineId = machine_pair.first;
+/**
+ * Activate a machine (move from intermediate to running tier)
+ * 
+ * @param machineId ID of the machine to activate
+ * @param now Current simulation time
+ */
+void Scheduler::ActivateMachine(MachineId_t machineId, Time_t now) {
+    if (machineTiers[machineId] == INTERMEDIATE) {
+        Machine_SetState(machineId, S0);
+        machineTiers[machineId] = RUNNING;
         
-        if (machineUtilization[machineId] == 0) {
+        if (find(machines.begin(), machines.end(), machineId) == machines.end()) {
+            machines.push_back(machineId);
+            
             MachineInfo_t info = Machine_GetInfo(machineId);
-            
-            if (info.s_state != S5) {
-                Machine_SetState(machineId, S5);
-                SimOutput("Scheduler::CheckAndTurnOffUnusedMachines(): Turned off machine " + 
-                          to_string(machineId) + " due to zero utilization", 2);
-            }
+            VMId_t vmId = VM_Create(LINUX, info.cpu);
+            vms.push_back(vmId);
+            VM_Attach(vmId, machineId);
         }
-    }
-}
-
-MachineId_t Scheduler::FindMachineForTask(TaskId_t taskId) {
-    for (auto& machine : machines) {
-        MachineInfo_t info = Machine_GetInfo(machine);
-        VMId_t vmId = FindVMForMachine(machine);
-        VMInfo_t vmInfo = VM_GetInfo(vmId);
         
-        for (auto& task : vmInfo.active_tasks) {
-            if (task == taskId) {
-                return machine;
+        SimOutput("Scheduler::ActivateMachine(): Activated machine " + to_string(machineId), 1);
+    }
+}
+
+/**
+ * Deactivate a machine (move from running to intermediate tier)
+ * 
+ * @param machineId ID of the machine to deactivate
+ * @param now Current simulation time
+ */
+void Scheduler::DeactivateMachine(MachineId_t machineId, Time_t now) {
+    if (machineTiers[machineId] == RUNNING && machineLoads[machineId] == 0) {
+        Machine_SetState(machineId, S3);
+        machineTiers[machineId] = INTERMEDIATE;
+        
+        auto machineIt = find(machines.begin(), machines.end(), machineId);
+        if (machineIt != machines.end()) {
+            size_t index = machineIt - machines.begin();
+            VM_Shutdown(vms[index]);
+            
+            vms.erase(vms.begin() + index);
+            machines.erase(machineIt);
+        }
+        
+        SimOutput("Scheduler::DeactivateMachine(): Deactivated machine " + to_string(machineId), 1);
+    }
+}
+
+/**
+ * Find a machine compatible with the specified CPU type
+ * 
+ * @param cpuType CPU type to match
+ * @param includeIntermediate Whether to include machines in the intermediate tier
+ * @return ID of a compatible machine, or -1 if none found
+ */
+MachineId_t Scheduler::FindCompatibleMachine(CPUType_t cpuType, bool includeIntermediate) {
+    if (cpuTypeMachines.find(cpuType) != cpuTypeMachines.end()) {
+        for (auto& machineId : cpuTypeMachines[cpuType]) {
+            if (machineTiers[machineId] == RUNNING) {
+                return machineId;
+            } else if (includeIntermediate && machineTiers[machineId] == INTERMEDIATE) {
+                return machineId;
             }
         }
     }
-    
-    return (MachineId_t)-1; // Not found
+    return (MachineId_t)-1;
 }
 
-TaskId_t Scheduler::FindSmallestTaskOnMachine(MachineId_t machineId) {
-    VMId_t vmId = FindVMForMachine(machineId);
-    VMInfo_t vmInfo = VM_GetInfo(vmId);
+/**
+ * Get overall system load (0.0 to 1.0)
+ * 
+ * Uses memory usage as a proxy for system load.
+ * 
+ * @return System load as a value between 0.0 and 1.0
+ */
+double Scheduler::GetSystemLoad() {
+    unsigned totalMemory = 0;
+    unsigned usedMemory = 0;
     
-    if (vmInfo.active_tasks.empty()) {
-        return (TaskId_t)-1;
+    for (auto& machineId : machines) {
+        MachineInfo_t info = Machine_GetInfo(machineId);
+        totalMemory += info.memory_size;
+        usedMemory += info.memory_used;
     }
     
-    TaskId_t smallestTask = vmInfo.active_tasks[0];
-    unsigned smallestMemory = GetTaskMemory(smallestTask);
-    
-    for (auto& taskId : vmInfo.active_tasks) {
-        unsigned memory = GetTaskMemory(taskId);
-        if (memory < smallestMemory) {
-            smallestTask = taskId;
-            smallestMemory = memory;
-        }
-    }
-    
-    return smallestTask;
+    return totalMemory > 0 ? (double)usedMemory / totalMemory : 0.0;
 }
 
-// Public interface below
+/**
+ * Get load for a specific machine (0.0 to 1.0)
+ * 
+ * Uses memory usage as a proxy for machine load.
+ * 
+ * @param machineId ID of the machine to check
+ * @return Machine load as a value between 0.0 and 1.0
+ */
+double Scheduler::GetMachineLoad(MachineId_t machineId) {
+    MachineInfo_t info = Machine_GetInfo(machineId);
+    return info.memory_size > 0 ? (double)info.memory_used / info.memory_size : 0.0;
+}
+
+/**
+ * Check if a machine is suitable for a task
+ * 
+ * Verifies CPU compatibility and memory availability.
+ * 
+ * @param machineId ID of the machine to check
+ * @param taskId ID of the task to check
+ * @return True if the machine is suitable for the task, false otherwise
+ */
+bool Scheduler::IsMachineSuitable(MachineId_t machineId, TaskId_t taskId) {
+    MachineInfo_t info = Machine_GetInfo(machineId);
+    
+    if (info.cpu != RequiredCPUType(taskId)) {
+        return false;
+    }
+    
+    unsigned taskMemory = GetTaskMemory(taskId);
+    if (info.memory_used + taskMemory > info.memory_size) {
+        return false;
+    }
+    
+    return true;
+}
 
 static Scheduler Scheduler;
 
+/**
+ * Initialize the scheduler
+ * 
+ * Called by the simulator to initialize the E-eco scheduler.
+ */
 void InitScheduler() {
-    SimOutput("InitScheduler(): Initializing scheduler", 0);
+    SimOutput("InitScheduler(): Initializing E-eco scheduler", 3);
     Scheduler.Init();
 }
 
+/**
+ * Handle new task arrival
+ * 
+ * Called by the simulator when a new task arrives.
+ * 
+ * @param time Current simulation time
+ * @param task_id ID of the newly arrived task
+ */
 void HandleNewTask(Time_t time, TaskId_t task_id) {
-    SimOutput("HandleNewTask(): Received new task " + to_string(task_id) + " at time " + to_string(time), 1);
+    SimOutput("HandleNewTask(): Received task " + to_string(task_id), 3);
     Scheduler.NewTask(time, task_id);
 }
 
+/**
+ * Handle task completion
+ * 
+ * Called by the simulator when a task completes.
+ * 
+ * @param time Current simulation time
+ * @param task_id ID of the completed task
+ */
 void HandleTaskCompletion(Time_t time, TaskId_t task_id) {
-    SimOutput("HandleTaskCompletion(): Task " + to_string(task_id) + " completed at time " + to_string(time), 1);
+    SimOutput("HandleTaskCompletion(): Task " + to_string(task_id) + " completed", 3);
     Scheduler.TaskComplete(time, task_id);
 }
 
+/**
+ * Handle memory warning
+ * 
+ * Called by the simulator when a machine is overcommitted.
+ * 
+ * @param time Current simulation time
+ * @param machine_id ID of the overcommitted machine
+ */
 void MemoryWarning(Time_t time, MachineId_t machine_id) {
-    // The simulator is alerting you that machine identified by machine_id is overcommitted
-    SimOutput("MemoryWarning(): Overflow at " + to_string(machine_id) + " was detected at time " + to_string(time), 1);
+    SimOutput("MemoryWarning(): Overflow at " + to_string(machine_id) + " detected", 1);
 }
 
+/**
+ * Handle VM migration completion
+ * 
+ * Called by the simulator when a VM migration completes.
+ * 
+ * @param time Current simulation time
+ * @param vm_id ID of the VM that completed migration
+ */
 void MigrationDone(Time_t time, VMId_t vm_id) {
-    // The function is called on to alert you that migration is complete
-    SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " was completed at time " + to_string(time), 1);
+    SimOutput("MigrationDone(): Migration of VM " + to_string(vm_id) + " completed", 3);
     Scheduler.MigrationComplete(time, vm_id);
-    migrating = false;
 }
 
+/**
+ * Periodic scheduler check
+ * 
+ * Called periodically by the simulator to allow the scheduler
+ * to monitor and adjust the system.
+ * 
+ * @param time Current simulation time
+ */
 void SchedulerCheck(Time_t time) {
-    // This function is called periodically by the simulator, no specific event
-    SimOutput("SchedulerCheck(): SchedulerCheck() called at " + to_string(time), 1);
+    if (time % 1000000 == 0) {
+        SimOutput("SchedulerCheck(): Called at " + to_string(time), 3);
+    }
     Scheduler.PeriodicCheck(time);
 }
 
+/**
+ * Handle simulation completion
+ * 
+ * Called by the simulator when the simulation completes.
+ * Reports final statistics and shuts down the scheduler.
+ * 
+ * @param time Final simulation time
+ */
 void SimulationComplete(Time_t time) {
-    // This function is called before the simulation terminates Add whatever you feel like.
     cout << "SLA violation report" << endl;
     cout << "SLA0: " << GetSLAReport(SLA0) << "%" << endl;
     cout << "SLA1: " << GetSLAReport(SLA1) << "%" << endl;
-    cout << "SLA2: " << GetSLAReport(SLA2) << "%" << endl;     // SLA3 do not have SLA violation issues
+    cout << "SLA2: " << GetSLAReport(SLA2) << "%" << endl;
     cout << "Total Energy " << Machine_GetClusterEnergy() << "KW-Hour" << endl;
     cout << "Simulation run finished in " << double(time)/1000000 << " seconds" << endl;
     SimOutput("SimulationComplete(): Simulation finished at time " + to_string(time), 1);
@@ -348,11 +560,26 @@ void SimulationComplete(Time_t time) {
     Scheduler.Shutdown(time);
 }
 
+/**
+ * Handle SLA warning
+ * 
+ * Called by the simulator when a task is at risk of violating its SLA.
+ * 
+ * @param time Current simulation time
+ * @param task_id ID of the task at risk of violating its SLA
+ */
 void SLAWarning(Time_t time, TaskId_t task_id) {
-    SimOutput("SLAWarning(): SLA violation for task " + to_string(task_id) + " at time " + to_string(time), 1);
+    SimOutput("SLAWarning(): SLA violation risk for task " + to_string(task_id), 1);
 }
 
+/**
+ * Handle machine state change completion
+ * 
+ * Called by the simulator when a machine completes a state change.
+ * 
+ * @param time Current simulation time
+ * @param machine_id ID of the machine that completed a state change
+ */
 void StateChangeComplete(Time_t time, MachineId_t machine_id) {
-    // Called in response to an earlier request to change the state of a machine
-    SimOutput("StateChangeComplete(): State change for machine " + to_string(machine_id) + " completed at time " + to_string(time), 3);
+    SimOutput("StateChangeComplete(): Machine " + to_string(machine_id) + " state change complete", 3);
 }
