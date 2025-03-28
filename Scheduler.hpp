@@ -24,6 +24,7 @@ public:
 private:
     vector<VMId_t> vms;
     vector<MachineId_t> machines;
+    
 };
 
 

@@ -22,14 +22,14 @@ void Scheduler::Init() {
     SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
     SimOutput("Scheduler::Init(): Initializing scheduler", 1);
     active_machines = Machine_GetTotal()
-    for(unsigned i = 0; i < active_machines; i++)
-        vms.push_back(VM_Create(LINUX, X86));
+    // for(unsigned i = 0; i < active_machines; i++)
+    //     vms.push_back(VM_Create(LINUX, X86));
     for(unsigned i = 0; i < active_machines; i++) {
         machines.push_back(MachineId_t(i));
     }    
-    for(unsigned i = 0; i < active_machines; i++) {
-        VM_Attach(vms[i], machines[i]);
-    }
+    // for(unsigned i = 0; i < active_machines; i++) {
+    //     VM_Attach(vms[i], machines[i]);
+    // }
 
     bool dynamic = false;
     if(dynamic)
@@ -139,7 +139,7 @@ void SchedulerCheck(Time_t time) {
     counts++;
     if(counts == 10) {
         migrating = true;
-        VM_Migrate(1, 9);
+        VM_Migrate(1, 9); // need to fix
     }
 }
 

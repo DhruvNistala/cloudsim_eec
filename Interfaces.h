@@ -57,7 +57,7 @@ extern unsigned         GetNumTasks();
 extern TaskInfo_t       GetTaskInfo(TaskId_t task_id);
 extern unsigned         GetTaskMemory(TaskId_t task_id);
 extern unsigned         GetTaskPriority(TaskId_t task_id);
-extern bool             IsSLAViolated(TaskId_t task_id);
+extern bool             IsSLAViolation(TaskId_t task_id);
 extern bool             IsTaskCompleted(TaskId_t task_id);
 extern bool             IsTaskGPUCapable(TaskId_t task_id);
 extern CPUType_t        RequiredCPUType(TaskId_t task_id);
@@ -65,13 +65,13 @@ extern SLAType_t        RequiredSLA(TaskId_t task_id);
 extern VMType_t         RequiredVMType(TaskId_t task_id);
 extern void             SetTaskPriority(TaskId_t task_id, Priority_t priority);
 
-// VM Interface
-extern void             VM_Attach(VMId_t vm_id, MachineId_t machine_id);
-extern void             VM_AddTask(VMId_t vm_id, TaskId_t task_id, Priority_t priority);
-extern VMId_t           VM_Create(VMType_t vm_type, CPUType_t cpu);
-extern VMInfo_t         VM_GetInfo(VMId_t vm_id);
-extern void             VM_Migrate(VMId_t vm_id, MachineId_t machine_id);
-extern void             VM_RemoveTask(VMId_t vm_id, TaskId_t task_id);
-extern void             VM_Shutdown(VMId_t vm_id);
+// VM Interface – Down calls, scheduler calls to tell simulator to do something
+extern void             VM_Attach(VMId_t vm_id, MachineId_t machine_id); // link VM to physical server
+extern void             VM_AddTask(VMId_t vm_id, TaskId_t task_id, Priority_t priority); // 
+extern VMId_t           VM_Create(VMType_t vm_type, CPUType_t cpu); // Creates VM (keep compatibility in mind)
+extern VMInfo_t         VM_GetInfo(VMId_t vm_id); // 
+extern void             VM_Migrate(VMId_t vm_id, MachineId_t machine_id); //
+extern void             VM_RemoveTask(VMId_t vm_id, TaskId_t task_id); //
+extern void             VM_Shutdown(VMId_t vm_id); //
 
 #endif /* Interfaces_h */
