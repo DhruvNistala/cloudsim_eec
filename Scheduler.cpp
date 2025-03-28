@@ -19,27 +19,89 @@ void Scheduler::Init() {
     //      Get the number of CPUs
     //      Get if there is a GPU or not
     // 
-    SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
-    SimOutput("Scheduler::Init(): Initializing scheduler", 1);
-    active_machines = Machine_GetTotal()
-    for(unsigned i = 0; i < active_machines; i++)
-        vms.push_back(VM_Create(LINUX, X86));
+    SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 0);
+    SimOutput("Scheduler::Init(): Initializing scheduler", 0);
+    active_machines = Machine_GetTotal();
+    // for(unsigned i = 0; i < active_machines; i++)
+    //     vms.push_back(VM_Create(LINUX, X86));
     for(unsigned i = 0; i < active_machines; i++) {
         machines.push_back(MachineId_t(i));
-    }    
-    for(unsigned i = 0; i < active_machines; i++) {
-        VM_Attach(vms[i], machines[i]);
+        MachineInfo_t machine = Machine_GetInfo(MachineId_t(i));
+        switch (machine.cpu)
+        {
+        case RISCV: {
+            VMId_t new_vm = VM_Create(LINUX, RISCV);
+            vms.push_back(new_vm);
+            linux.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            new_vm = VM_Create(LINUX_RT, RISCV);
+            vms.push_back(new_vm);
+            linux_rt.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            break;
+        }
+        case POWER: {
+            VMId_t new_vm = VM_Create(LINUX, POWER);
+            vms.push_back(new_vm);
+            linux.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            new_vm = VM_Create(LINUX_RT, POWER);
+            vms.push_back(new_vm);
+            linux_rt.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            new_vm = VM_Create(AIX, POWER);
+            vms.push_back(new_vm);
+            aix.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            break;
+        }
+        case ARM: {
+            VMId_t new_vm = VM_Create(LINUX, ARM);
+            vms.push_back(new_vm);
+            linux.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            new_vm = VM_Create(LINUX_RT, ARM);
+            vms.push_back(new_vm);
+            linux_rt.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            new_vm = VM_Create(WIN, ARM);
+            vms.push_back(new_vm);
+            win.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            break;
+        }
+        case X86: {
+            VMId_t new_vm = VM_Create(LINUX, X86);
+            vms.push_back(new_vm);
+            linux.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            new_vm = VM_Create(LINUX_RT, X86);
+            vms.push_back(new_vm);
+            linux_rt.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            new_vm = VM_Create(WIN, X86);
+            vms.push_back(new_vm);
+            win.push_back(new_vm);
+            VM_Attach(new_vm, MachineId_t(i));
+            break;
+        }
+        default:
+            break;
+        }
     }
+    // for(unsigned i = 0; i < active_machines; i++) {
+        // VM_Attach(vms[i], machines[i]);
+    // }
 
     bool dynamic = false;
     if(dynamic)
         for(unsigned i = 0; i<4 ; i++)
             for(unsigned j = 0; j < 8; j++)
                 Machine_SetCorePerformance(MachineId_t(0), j, P3);
+    
     // Turn off the ARM machines
     for(unsigned i = 24; i < Machine_GetTotal(); i++)
         Machine_SetState(MachineId_t(i), S5);
-
     SimOutput("Scheduler::Init(): VM ids are " + to_string(vms[0]) + " ahd " + to_string(vms[1]), 3);
 }
 
