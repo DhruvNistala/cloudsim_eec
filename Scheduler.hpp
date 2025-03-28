@@ -24,7 +24,10 @@ public:
 private:
     vector<VMId_t> vms;
     vector<MachineId_t> machines;
-    
+    vector<VMId_t> linux;
+    vector<VMId_t> linux_rt;
+    vector<VMId_t> win;
+    vector<VMId_t> aix;
 };
 
 

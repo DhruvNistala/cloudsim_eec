@@ -21,7 +21,14 @@ void Scheduler::Init() {
     // 
     SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 0);
     SimOutput("Scheduler::Init(): Initializing scheduler", 0);
+    SimOutput("Scheduler::Init(): Initial number of VMs: " + to_string(vms.size()), 0);
+    SimOutput("Scheduler::Init(): Initial number of machines: " + to_string(machines.size()), 0);
+
     active_machines = Machine_GetTotal();
+    SimOutput("List of all machines: ", 0);
+    for (int i = 0; i < active_machines; i++) {
+        SimOutput("machine cpu type: " + to_string(Machine_GetInfo(MachineId_t(i))), 0);
+    }
     // // for(unsigned i = 0; i < active_machines; i++)
     // //     vms.push_back(VM_Create(LINUX, X86));
     for(unsigned i = 0; i < active_machines; i++) {
