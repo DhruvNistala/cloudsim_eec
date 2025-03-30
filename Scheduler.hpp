@@ -9,7 +9,6 @@
 #define Scheduler_hpp
 
 #include <vector>
-#include <unordered_map>
 
 #include "Interfaces.h"
 
@@ -29,7 +28,6 @@ private:
     vector<VMId_t> aix;
     vector<VMId_t> linux;
     vector<VMId_t> linux_rt;
-    std::unordered_map<VMId_t, float> vm_utilization;
 };
 
 
