@@ -10,6 +10,7 @@
 
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 
 #include "Interfaces.h"
 
@@ -31,6 +32,7 @@ private:
     vector<VMId_t> linux;
     vector<VMId_t> linux_rt;
     unordered_set<VMId_t> migrating_vms;
+    unordered_map<MachineId_t, float> util_map;
 };
 
 
