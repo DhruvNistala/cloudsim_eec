@@ -96,6 +96,11 @@ void Scheduler::Init() {
 
 void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id) {
     // Update your data structure. The VM now can receive new tasks
+
+    migrating_vms.erase(vm_id);
+    SimOutput("MigrationComplete(): Migration of VM " + to_string(vm_id) + " completed at time " + to_string(time), 4);
+
+
 }
 
 #include <climits>
@@ -119,10 +124,11 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
     
     bool found = false;
     
+    // First pass: Try to find an exact match for VM type and CPU type.
     for(size_t i = 0; i < vms.size(); i++) {
-        if(migrating && i == 1) {
+        // Skip VMs that are currently migrating
+        if (migrating_vms.find(vms[i]) != migrating_vms.end())
             continue;
-        }
         
         VMInfo_t vm_info = VM_GetInfo(vms[i]);
         
@@ -139,11 +145,11 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         }
     }
     
+    // Second pass: CPU-only match if an exact match wasn't found.
     if(!found) {
         for(size_t i = 0; i < vms.size(); i++) {
-            if(migrating && i == 1) {
+            if (migrating_vms.find(vms[i]) != migrating_vms.end())
                 continue;
-            }
             
             VMInfo_t vm_info = VM_GetInfo(vms[i]);
             
@@ -161,6 +167,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id) {
         }
     }
     
+    // Create a new VM if no existing VM was found.
     if(!found) {
         VMId_t new_vm = VM_Create(vm_type, cpu_type);
         
@@ -332,12 +339,6 @@ void SchedulerCheck(Time_t time) {
     // This function is called periodically by the simulator, no specific event
     SimOutput("SchedulerCheck(): SchedulerCheck() called at " + to_string(time), 4);
     Scheduler.PeriodicCheck(time);
-    static unsigned counts = 0;
-    counts++;
-    if(counts == 10) {
-        migrating = true;
-        VM_Migrate(1, 9);
-    }
 }
 
 void SimulationComplete(Time_t time) {

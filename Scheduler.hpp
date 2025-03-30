@@ -9,6 +9,7 @@
 #define Scheduler_hpp
 
 #include <vector>
+#include <unordered_set>
 
 #include "Interfaces.h"
 
@@ -21,6 +22,7 @@ public:
     void PeriodicCheck(Time_t now);
     void Shutdown(Time_t now);
     void TaskComplete(Time_t now, TaskId_t task_id);
+    void SchedulerCheck(Time_t now);
 private:
     vector<VMId_t> vms;
     vector<MachineId_t> machines;
@@ -28,6 +30,7 @@ private:
     vector<VMId_t> aix;
     vector<VMId_t> linux;
     vector<VMId_t> linux_rt;
+    unordered_set<VMId_t> migrating_vms;
 };
 
 
