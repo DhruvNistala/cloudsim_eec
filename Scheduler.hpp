@@ -14,9 +14,10 @@
 
 #include "Interfaces.h"
 
-class Scheduler {
+class Scheduler
+{
 public:
-    Scheduler()                 {}
+    Scheduler() {}
     void Init();
     void MigrationComplete(Time_t time, VMId_t vm_id);
     void NewTask(Time_t now, TaskId_t task_id);
@@ -24,6 +25,10 @@ public:
     void Shutdown(Time_t now);
     void TaskComplete(Time_t now, TaskId_t task_id);
     void SchedulerCheck(Time_t now);
+    float CalculateCPUUtilization(MachineId_t machine_id);
+    float CalculateMachineUtilization(MachineId_t machine_id);
+    unsigned CalculateMachineMIPS(MachineId_t machine_id);
+
 private:
     vector<VMId_t> vms;
     vector<MachineId_t> machines;
@@ -32,9 +37,7 @@ private:
     vector<VMId_t> linux;
     vector<VMId_t> linux_rt;
     unordered_set<VMId_t> migrating_vms;
-    unordered_map<MachineId_t, float> util_map;
+    unordered_map<MachineId_t, float> mips_util_map;
 };
-
-
 
 #endif /* Scheduler_hpp */

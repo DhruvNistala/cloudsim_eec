@@ -6,6 +6,8 @@
 //
 
 #include "Scheduler.hpp"
+#include <utility>
+#include <iostream>
 
 static bool migrating = false;
 static unsigned active_machines = 16;
@@ -20,9 +22,10 @@ void Scheduler::Init()
     //      Get the number of CPUs
     //      Get if there is a GPU or not
     //
-    SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 3);
-    SimOutput("Scheduler::Init(): Initializing scheduler", 4);
+    SimOutput("Scheduler::Init(): Total number of machines is " + to_string(Machine_GetTotal()), 0);
+    SimOutput("Scheduler::Init(): Initializing scheduler", 0);
     active_machines = Machine_GetTotal();
+    SimOutput("Length of performance vector: " + to_string(Machine_GetInfo(MachineId_t(0)).performance.size()) + " and length of p-states vector: " + to_string(Machine_GetInfo(MachineId_t(0)).p_states.size()), 0);
 
     for (unsigned i = 0; i < active_machines; i++)
     {
@@ -113,6 +116,7 @@ void Scheduler::MigrationComplete(Time_t time, VMId_t vm_id)
 
 void Scheduler::NewTask(Time_t now, TaskId_t task_id)
 {
+
     // Get the task parameters
     VMType_t vm_type = RequiredVMType(task_id);
     CPUType_t cpu_type = RequiredCPUType(task_id);
@@ -153,6 +157,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id)
             if ((!gpu_capable || machine_info.gpus) && machine_info.memory_size - machine_info.memory_used >= memory)
             {
                 VM_AddTask(vms[i], task_id, priority);
+                // update cpu util
                 found = true;
                 SimOutput("Scheduler::NewTask(): Added task " + to_string(task_id) + " to existing VM " + to_string(vms[i]) + " with exact match", 3);
                 break;
@@ -178,6 +183,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id)
                 if ((!gpu_capable || machine_info.gpus) && machine_info.memory_size - machine_info.memory_used >= memory)
                 {
                     VM_AddTask(vms[i], task_id, priority);
+                    // update cpu util
                     found = true;
                     SimOutput("Scheduler::NewTask(): Added task " + to_string(task_id) + " to existing VM " + to_string(vms[i]) + " with CPU match", 3);
                     break;
@@ -229,6 +235,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id)
 
                 // Assign the task to this new VM.
                 VM_AddTask(new_vm, task_id, priority);
+                // update cpu util
                 found = true;
                 attached = true;
                 SimOutput("Scheduler::NewTask(): Created new VM for task " + to_string(task_id) +
@@ -249,6 +256,7 @@ void Scheduler::NewTask(Time_t now, TaskId_t task_id)
     if (!found && !vms.empty())
     {
         VM_AddTask(vms[0], task_id, priority);
+        // update cpu util
         found = true;
         SimOutput("Scheduler::NewTask(): Added task " + to_string(task_id) + " to VM " + to_string(vms[0]) + " as absolute last resort", 3);
     }
@@ -353,4 +361,39 @@ void SLAWarning(Time_t time, TaskId_t task_id)
 void StateChangeComplete(Time_t time, MachineId_t machine_id)
 {
     // Called in response to an earlier request to change the state of a machine
+}
+
+float Scheduler::CalculateCPUUtilization(MachineId_t machine_id)
+{
+    float required_mips = mips_util_map[machine_id];
+    float cpu_utilization = required_mips / Machine_GetInfo(machine_id).p_state;
+    return cpu_utilization;
+}
+
+float Scheduler::CalculateMachineUtilization(MachineId_t machine_id)
+{
+    MachineInfo_t machine_info = Machine_GetInfo(machine_id);
+    float used_memory = machine_info.memory_used;
+    float total_memory = machine_info.memory_size;
+    return used_memory / total_memory;
+}
+unsigned Scheduler::CalculateMachineMIPS(MachineId_t machine_id)
+{
+    MachineInfo_t machine_info = Machine_GetInfo(machine_id);
+    CPUPerformance_t p_state = machine_info.p_state;
+    switch (p_state)
+    {
+    case P0:
+        return machine_info.performance[0];
+        break;
+    case P1:
+        return machine_info.performance[1];
+        break;
+    case P2:
+        return machine_info.performance[2];
+        break;
+    case P3:
+        return machine_info.performance[3];
+        break;
+    }
 }
