@@ -14,6 +14,15 @@
 
 #include "Interfaces.h"
 
+struct PendingAttachment
+{
+    VMId_t vm;
+    MachineId_t machine_id;
+    TaskId_t task_id;
+    Priority_t priority;
+    double demand;
+};
+
 class Scheduler
 {
 public:
@@ -25,9 +34,22 @@ public:
     void Shutdown(Time_t now);
     void TaskComplete(Time_t now, TaskId_t task_id);
     void SchedulerCheck(Time_t now);
-    float CalculateCPUUtilization(MachineId_t machine_id);
-    float CalculateMachineUtilization(MachineId_t machine_id);
+    void SLAWarning(Time_t time, TaskId_t task_id);
+    void MigrateVM(VMId_t, MachineId_t target_machine);
+
+    bool IsVMReady(VMId_t vm);
+
+    double CalculateCPUUtilization(MachineId_t machine_id);
+    double CalculateMemoryUtilization(MachineId_t machine_id);
+
+    double CalculateTaskCPUUtilization(TaskId_t task_id);
+    double CalculateTaskMemoryUtilization(TaskId_t task_id);
+
     unsigned CalculateMachineMIPS(MachineId_t machine_id);
+
+    void StateChangeComplete(Time_t time, MachineId_t machine_id);
+
+    vector<MachineId_t> SortMachinesByUtilization();
 
 private:
     vector<VMId_t> vms;
@@ -38,6 +60,17 @@ private:
     vector<VMId_t> linux_rt;
     unordered_set<VMId_t> migrating_vms;
     unordered_map<MachineId_t, float> mips_util_map;
+    unordered_map<TaskId_t, MachineId_t> machine_with_task;
+
+    struct PendingAttachment
+    {
+        VMId_t vm;
+        MachineId_t machine_id;
+        TaskId_t task_id;
+        Priority_t priority;
+        double demand;
+    };
+    vector<PendingAttachment> pendingAttachments;
 };
 
 #endif /* Scheduler_hpp */
